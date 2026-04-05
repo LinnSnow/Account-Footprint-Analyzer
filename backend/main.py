@@ -27,7 +27,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.metadata"
 ]
 
-flow = Flow.from_client_config(
+flow = Flow.from_client_config( #from_client_config is a way used to create objects. we pass a dictionary here.
     {
         "web": {
             "client_id": CLIENT_ID,
@@ -76,12 +76,53 @@ def callback(code: str, state: str):
     }
 
 @app.get("/scan/gmail")
-def fetch_gmail(email:str):
-    if email in token_store:
-        return {
-            "message": "Credentials found"
-        }
-    else:
-        return{
-            "message": "please login first"
-        }
+def fetch_gmail(email: str):
+    if email not in token_store:
+        return {"message": "please login first"}
+    
+    credentials = token_store[email]
+    
+    # build the gmail service object
+    service = build("gmail", "v1", credentials=credentials)
+    
+    # fetch list of message IDs (just IDs, not full messages yet)
+    results = service.users().messages().list(
+        userId="me",
+        maxResults=10
+    ).execute()
+    
+    messages = results.get("messages", [])
+    
+    # for each message ID, fetch the headers
+    senders = set()  # set automatically removes duplicates
+    
+    for message in messages:
+        msg = service.users().messages().get(
+            userId="me",
+            id=message["id"],
+            format="metadata",
+            metadataHeaders=["From"]
+        ).execute()
+        
+        # extract the From header value
+        headers = msg.get("payload", {}).get("headers", [])
+        for header in headers:
+            if header["name"] == "From":
+                raw_sender = header["value"]
+                # extract email from "Name <email@domain.com>" format
+                if "<" in raw_sender:
+                    email_part = raw_sender.split("<")[1].strip(">")
+                else:
+                    email_part = raw_sender.strip()
+                
+                # extract just the domain
+                if "@" in email_part:
+                    domain = email_part.split("@")[1].lower().strip()
+                    senders.add(domain)
+    
+    return {
+        "email": email,
+        "total_messages_scanned": len(messages),
+        "unique_domains": len(senders),
+        "domains": sorted(list(senders))
+    }
